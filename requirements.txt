@@ -6,3 +6,4 @@ h5py>=3.11,<4
 tensorflow==2.15.0
 ultralytics>=8.3,<9
 easyocr>=1.7,<2
+cv2
