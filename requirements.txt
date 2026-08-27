@@ -1,0 +1,8 @@
+streamlit>=1.39,<2
+numpy>=1.26,<2
+opencv-python-headless>=4.10,<5
+pillow>=10,<12
+h5py>=3.11,<4
+tensorflow-cpu==2.16.2
+ultralytics>=8.3,<9
+easyocr>=1.7,<2
