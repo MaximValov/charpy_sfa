@@ -509,9 +509,9 @@ def main() -> None:
         resolved_cnn_path = first_existing_path(
             [
                 cnn_path,
-                "unet23jan_model.h5",
-                "models/unet23jan_model.h5",
-                "models/unet_model.h5",
+                # "unet23jan_model.h5",
+                "models/unet23jan_model2.h5",
+                # "models/unet_model.h5",
             ]
         )
 
