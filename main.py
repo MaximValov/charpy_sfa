@@ -25,7 +25,7 @@ import requests
 from PIL import Image
 
 RESIZED_IMAGE_LENGTH = 256
-CLASS_NAMES = ("Ductile", "Brittle", "Background")
+CLASS_NAMES = ("Фон", "Хрупкий", "Вязкий")
 CLASS_CHARPY = 0
 CLASS_SCALEBAR = 1
 COLOR_CHARPY = (0, 255, 0)       # Green, BGR
@@ -59,6 +59,16 @@ def custom_conv2d_transpose(**kwargs: Any) -> Any:
 
     kwargs.pop("groups", None)
     return Conv2DTranspose(**kwargs)
+
+
+def map_charpy_width_to_standard(width_mm: float) -> float | None:
+    """Map Charpy width to the closest standard value from [2.5, 5, 7.5, 10]."""
+    if width_mm is None or width_mm <= 0:
+        return None
+
+    standard_sizes = [2.5, 5.0, 7.5, 10.0]
+    closest = min(standard_sizes, key=lambda x: abs(x - width_mm))
+    return closest
 
 
 def validate_model_file(file_path: str, model_type: str) -> bool:
@@ -737,10 +747,16 @@ def build_overlay(
             cv2.LINE_AA,
         )
 
+    # Display Charpy width with standard mapping
     if scale and scale.get("charpy_width_mm") is not None:
+        display_text = f"Charpy width: {scale['charpy_width_mm']:.6g} mm"
+        # Calculate and display standard mapped value
+        standard_width = map_charpy_width_to_standard(scale['charpy_width_mm'])
+        if standard_width is not None:
+            display_text += f" → {standard_width:.1f} mm (standard)"
         cv2.putText(
             blended_bgr,
-            f"Charpy width: {scale['charpy_width_mm']:.6g} mm",
+            display_text,
             (10, 50),
             cv2.FONT_HERSHEY_SIMPLEX,
             1.0,
@@ -803,16 +819,14 @@ def show_legend() -> None:
 
 def main() -> None:
     st.set_page_config(
-        page_title="FractureMask",
+        page_title="ДВС",
         page_icon="FM",
         layout="wide",
         initial_sidebar_state="expanded",
     )
-    st.title("FractureMask")
+    st.title("ДВС")
     st.write(
-        "Segment brittle fracture, ductile fracture, and background from "
-        "microscopy images. YOLO finds the scale bar so results can include "
-        "a pixel-to-millimetre estimate."
+        "Определение ДВС по изображению."
     )
 
     with st.sidebar:
@@ -925,7 +939,7 @@ def main() -> None:
                 )
 
     uploaded_image = st.file_uploader(
-        "Upload a fracture image",
+        "Загрузите изображение излома",
         type=["png", "jpg", "jpeg", "tif", "tiff", "bmp"],
         help="The CNN converts the image to grayscale and resizes it to 256 × 256.",
     )
@@ -977,7 +991,7 @@ def main() -> None:
                 resolved_yolo_path = DEFAULT_YOLO_URL
                 st.sidebar.info("Using default YOLO model from GitHub")
 
-    run_analysis = st.button("Run fracture analysis", type="primary", use_container_width=True)
+    run_analysis = st.button("Измерить ДВС", type="primary", use_container_width=True)
     if run_analysis:
         with st.spinner("Loading models and running analysis..."):
             try:
@@ -1144,10 +1158,27 @@ def main() -> None:
                 f"{counts[index] / total * 100:.2f}% of image",
             )
 
-    if result.get("scale", {}).get("pixel_size_mm") is not None:
-        pixel_size_mm = float(result["scale"]["pixel_size_mm"])
+    # Display area metrics with standard Charpy width
+    scale_data = result.get("scale", {})
+    if scale_data.get("pixel_size_mm") is not None:
+        pixel_size_mm = float(scale_data["pixel_size_mm"])
         brittle_area_mm2 = int(counts[1]) * pixel_size_mm**2
-        st.metric("Estimated brittle area", f"{brittle_area_mm2:.6g} mm²")
+        st.metric("Площадь хрупкого излома", f"{brittle_area_mm2:.3g} мм²")
+
+        # Display Charpy width with standard mapping
+        if scale_data.get("charpy_width_mm") is not None:
+            charpy_width = scale_data["charpy_width_mm"]
+            standard_width = map_charpy_width_to_standard(charpy_width)
+            if standard_width is not None:
+                st.metric(
+                    "Номинальная ширина образца",
+                    f"{standard_width:.1f} мм"
+                )
+                SFA_eval = 100*(1-brittle_area_mm2/(standard_width*8))
+                st.metric(
+                    "ДВС",
+                    f"{SFA_eval:.0f} %"
+                )
 
     st.subheader("Download results")
     download_columns = st.columns(4)
