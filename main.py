@@ -56,7 +56,6 @@ DEFAULT_YOLO_URL = f"best.pt"
 def custom_conv2d_transpose(**kwargs: Any) -> Any:
     """Allow models saved with a newer Keras `groups` argument to load."""
     from keras.layers import Conv2DTranspose
-
     kwargs.pop("groups", None)
     return Conv2DTranspose(**kwargs)
 
@@ -65,10 +64,8 @@ def map_charpy_width_to_standard(width_mm: float) -> float | None:
     """Map Charpy width to the closest standard value from [2.5, 5, 7.5, 10]."""
     if width_mm is None or width_mm <= 0:
         return None
-
     standard_sizes = [2.5, 5.0, 7.5, 10.0]
-    closest = min(standard_sizes, key=lambda x: abs(x - width_mm))
-    return closest
+    return min(standard_sizes, key=lambda x: abs(x - width_mm))
 
 
 def validate_model_file(file_path: str, model_type: str) -> bool:
@@ -77,22 +74,18 @@ def validate_model_file(file_path: str, model_type: str) -> bool:
     if not path.exists():
         return False
 
-    # Check file size
     file_size = path.stat().st_size
-    if file_size < 1024:  # Less than 1KB
+    if file_size < 1024:
         return False
 
-    # For H5 files, check header
     if model_type == "cnn" and (file_path.endswith('.h5') or file_path.endswith('.keras')):
         try:
             with open(file_path, 'rb') as f:
                 header = f.read(10)
-                # HDF5 files start with the magic bytes
                 if header[:8] != b'\x89HDF\r\n\x1a\n':
                     return False
         except Exception:
             return False
-
     return True
 
 
@@ -102,12 +95,10 @@ def download_model_from_github(url: str, model_kind: str) -> str:
     model_dir = Path(tempfile.gettempdir()) / "fracturemask-models"
     model_dir.mkdir(parents=True, exist_ok=True)
 
-    # Create a filename from the URL
     filename = Path(url).name
     if not filename:
         filename = f"{model_kind}_model"
 
-    # Add hash to avoid conflicts
     url_hash = hashlib.sha256(url.encode()).hexdigest()[:8]
     target = model_dir / f"{model_kind}-{url_hash}-{filename}"
 
@@ -116,11 +107,9 @@ def download_model_from_github(url: str, model_kind: str) -> str:
 
     with st.spinner(f"Downloading {model_kind} model from GitHub..."):
         try:
-            # Check if URL is accessible
             head_response = requests.head(url)
             if head_response.status_code != 200:
                 st.warning(f"Model not found at: {url}")
-                st.warning("Please upload the model manually or check the URL.")
                 raise requests.exceptions.RequestException(f"URL not accessible: {url}")
 
             response = requests.get(url, stream=True)
@@ -155,7 +144,6 @@ def load_cnn_model(model_path: str) -> Any:
     """Load the user's U-Net/CNN once per process."""
     from tensorflow import keras
 
-    # Check if it's a URL and download if needed
     if model_path.startswith(("http://", "https://")):
         model_path = download_model_from_github(model_path, "cnn")
 
@@ -289,7 +277,6 @@ def postprocess_predictions(
             cleaned_brittle, cv2.MORPH_OPEN, kernel
         )
 
-        # Make brittle pixels unambiguously brittle
         processed[cleaned_brittle == 1, :] = 0.0
         processed[..., brittle_class_idx] = cleaned_brittle.astype(np.float32)
         outside = cleaned_brittle == 0
@@ -385,63 +372,58 @@ def yolo_box_records(result: Any, class_names: dict[int, str]) -> list[dict[str,
 
 
 def draw_yolo_boxes(
-    image_bgr: np.ndarray,
-    boxes: list[Any],
-    class_names: dict[int, str],
+        image_bgr: np.ndarray,
+        boxes: list[Any],
+        class_names: dict[int, str],
 ) -> np.ndarray:
-    """
-    Draw bounding boxes for Charpy (green) and scale bar (orange).
-    """
+    """Draw bounding boxes for Charpy (green) and scale bar (orange)."""
     out = image_bgr.copy()
+
+    # Filter to get only Charpy boxes
+    charpy_boxes = []
+    scale_boxes = []
+
     for box in boxes:
         if isinstance(box, dict):
             cls_id = int(box.get("class_id", -1))
-            cls_name = str(
-                box.get("class_name")
-                or class_names.get(cls_id, f"class_{cls_id}")
-            )
+            cls_name = str(box.get("class_name") or class_names.get(cls_id, f"class_{cls_id}"))
             confidence = float(box.get("confidence", 0.0))
             x1, y1, x2, y2 = [int(value) for value in box["xyxy"]]
         else:
-            # Also accept native Ultralytics Boxes items
             cls_id = int(box.cls[0].item())
             confidence = float(box.conf[0].item())
             cls_name = class_names.get(cls_id, f"class_{cls_id}")
             x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
 
         normalized_name = cls_name.lower().replace("_", "").replace("-", "")
-        if "scale" in normalized_name or "bar" in normalized_name:
-            color = COLOR_SCALEBAR
-        elif "charpy" in normalized_name:
-            color = COLOR_CHARPY
-        elif cls_id == CLASS_SCALEBAR:
-            color = COLOR_SCALEBAR
-        else:
-            color = COLOR_CHARPY
 
-        cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
+        if "scale" in normalized_name or "bar" in normalized_name or cls_id == CLASS_SCALEBAR:
+            scale_boxes.append((x1, y1, x2, y2, cls_name, confidence))
+        else:
+            charpy_boxes.append((x1, y1, x2, y2, cls_name, confidence))
+
+    # Draw only the BEST Charpy box (highest confidence)
+    if charpy_boxes:
+        best_char_py = max(charpy_boxes, key=lambda b: b[5])  # Sort by confidence
+        x1, y1, x2, y2, cls_name, confidence = best_char_py
+        cv2.rectangle(out, (x1, y1), (x2, y2), COLOR_CHARPY, 2)
         label = f"{cls_name} {confidence:.2f}"
-        (text_width, text_height), baseline = cv2.getTextSize(
-            label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1
-        )
+        (text_width, text_height), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
         label_top = max(0, y1 - text_height - baseline - 6)
-        cv2.rectangle(
-            out,
-            (x1, label_top),
-            (x1 + text_width + 6, y1),
-            color,
-            cv2.FILLED,
-        )
-        cv2.putText(
-            out,
-            label,
-            (x1 + 3, max(text_height + 2, y1 - 4)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
-            (0, 0, 0),
-            1,
-            cv2.LINE_AA,
-        )
+        cv2.rectangle(out, (x1, label_top), (x1 + text_width + 6, y1), COLOR_CHARPY, cv2.FILLED)
+        cv2.putText(out, label, (x1 + 3, max(text_height + 2, y1 - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 1,
+                    cv2.LINE_AA)
+
+    # Draw ALL scale bar boxes
+    for x1, y1, x2, y2, cls_name, confidence in scale_boxes:
+        cv2.rectangle(out, (x1, y1), (x2, y2), COLOR_SCALEBAR, 2)
+        label = f"{cls_name} {confidence:.2f}"
+        (text_width, text_height), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
+        label_top = max(0, y1 - text_height - baseline - 6)
+        cv2.rectangle(out, (x1, label_top), (x1 + text_width + 6, y1), COLOR_SCALEBAR, cv2.FILLED)
+        cv2.putText(out, label, (x1 + 3, max(text_height + 2, y1 - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 1,
+                    cv2.LINE_AA)
+
     return out
 
 
@@ -455,14 +437,13 @@ def detect_scale_bar(
     """Detect, measure, and annotate the highest-confidence YOLO scale bar."""
     gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
 
-    # Run YOLO with the lower confidence threshold to catch both classes
-    # We'll filter by class-specific confidence later
     min_confidence = min(charpy_confidence, scalebar_confidence)
     result = yolo_model(image_rgb, conf=min_confidence, verbose=False)[0]
     class_names = normalize_yolo_class_names(
         getattr(result, "names", None) or getattr(yolo_model, "names", None)
     )
     boxes = result.boxes
+
     if boxes is None or len(boxes) == 0:
         return {
             "found": False,
@@ -473,140 +454,83 @@ def detect_scale_bar(
 
     all_boxes = yolo_box_records(result, class_names)
 
-    # Filter boxes by class-specific confidence thresholds
-    filtered_boxes = []
+    # Filter for scale bar only
+    scale_boxes = []
     for box in all_boxes:
         cls_name = box["class_name"].lower()
         cls_id = box["class_id"]
         confidence = box["confidence"]
 
-        # Check if this is a scale bar
         is_scale = "scale" in cls_name or "bar" in cls_name or cls_id == CLASS_SCALEBAR
-        is_charpy = "charpy" in cls_name or cls_id == CLASS_CHARPY
-
         if is_scale and confidence >= scalebar_confidence:
-            filtered_boxes.append(box)
-        elif is_charpy and confidence >= charpy_confidence:
-            filtered_boxes.append(box)
-        elif not is_scale and not is_charpy:
-            # For unknown classes, use the lower of the two thresholds
-            if confidence >= min_confidence:
-                filtered_boxes.append(box)
+            scale_boxes.append(box)
 
-    if not filtered_boxes:
+    if not scale_boxes:
         return {
             "found": False,
-            "message": f"No objects met confidence thresholds (Charpy: {charpy_confidence:.2f}, Scale: {scalebar_confidence:.2f}).",
-            "boxes": all_boxes,  # Return all boxes for display
+            "message": "No scale bar detected with sufficient confidence.",
+            "boxes": all_boxes,
             "class_names": class_names,
         }
 
-    # Find scale bar candidates from filtered boxes
-    scale_indices = [
-        index
-        for index, box in enumerate(filtered_boxes)
-        if (
-            "scale" in box["class_name"].lower()
-            or "bar" in box["class_name"].lower()
-            or box["class_id"] == CLASS_SCALEBAR
-        )
-    ]
-
-    # If no scale bar found, use the highest confidence box as fallback
-    if not scale_indices:
-        # Use the highest confidence box from filtered results
-        best_idx = max(range(len(filtered_boxes)), key=lambda i: filtered_boxes[i]["confidence"])
-        scale_indices = [best_idx]
-        is_fallback = True
-    else:
-        is_fallback = False
-
-    best_index = max(
-        scale_indices,
-        key=lambda index: filtered_boxes[index]["confidence"],
-    )
-    best_box = filtered_boxes[best_index]
+    # Use highest confidence scale bar
+    best_box = max(scale_boxes, key=lambda b: b["confidence"])
     x1, y1, x2, y2 = best_box["xyxy"]
     height, width = image_rgb.shape[:2]
     x1, x2 = max(0, x1), min(width, x2)
     y1, y2 = max(0, y1), min(height, y2)
+
     if x2 <= x1 or y2 <= y1:
         return {
             "found": False,
-            "message": "YOLO returned an invalid scale-bar box.",
-            "boxes": filtered_boxes,
+            "message": "Invalid scale bar box coordinates.",
+            "boxes": scale_boxes,
             "class_names": class_names,
         }
 
-    # Only a scale-bar class is valid for measuring the scale
-    best_name = best_box["class_name"].lower()
-    if not any(term in best_name for term in ["scale", "bar"]) and not is_fallback:
-        return {
-            "found": False,
-            "message": "YOLO detected objects, but no scale-bar class was found.",
-            "boxes": filtered_boxes,
-            "class_names": class_names,
-        }
-
+    # Crop the scale bar region
     crop = gray[y1:y2, x1:x2]
-    crop_height, crop_width = crop.shape[:2]
 
-    # A scale bar can be either light-on-dark or dark-on-light. Search both
-    # threshold polarities and select the longest compact horizontal component.
-    candidates: list[tuple[int, int, int, int, int]] = []
-    for threshold_type in (cv2.THRESH_BINARY, cv2.THRESH_BINARY_INV):
-        _, threshold = cv2.threshold(
-            crop, 0, 255, threshold_type | cv2.THRESH_OTSU
-        )
-        horizontal_kernel = cv2.getStructuringElement(
-            cv2.MORPH_RECT, (max(3, crop_width // 10), 1)
-        )
-        horizontal = cv2.morphologyEx(
-            threshold, cv2.MORPH_CLOSE, horizontal_kernel
-        )
-        contours, _ = cv2.findContours(
-            horizontal, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-        )
-        for contour in contours:
-            cx, cy, cw, ch = cv2.boundingRect(contour)
-            if cw >= max(5, int(crop_width * 0.12)) and cw >= ch * 3:
-                # Prefer long, thin components; penalize text-like blobs.
-                score = int(cw * 100 / max(ch, 1))
-                candidates.append((score, cw, cx, cy, ch))
+    # --- SIMPLIFIED SCALEBAR MEASUREMENT ---
+    # Use fixed threshold for white scalebar on dark background
+    _, thresh = cv2.threshold(crop, 240, 255, cv2.THRESH_BINARY)
 
-    if candidates:
-        _, line_px, line_cx, line_cy, line_ch = max(
-            candidates, key=lambda candidate: (candidate[1], candidate[0])
-        )
-        line_x1 = x1 + line_cx
-        line_y1 = y1 + line_cy + line_ch // 2
-        line_x2 = line_x1 + line_px
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    best_cnt = None
+    line_px = 0
+    for cnt in contours:
+        cx_, cy_, cw_, ch_ = cv2.boundingRect(cnt)
+        if cw_ > ch_ * 3 and cw_ > line_px:
+            line_px = cw_
+            best_cnt = cnt
+
+    if best_cnt is not None:
+        cx_, cy_, cw_, ch_ = cv2.boundingRect(best_cnt)
+        line_x1 = x1 + cx_
+        line_y1 = y1 + cy_ + ch_ // 2
+        line_x2 = x1 + cx_ + cw_
         line_y2 = line_y1
-        measurement_source = "horizontal component inside YOLO box"
+        measurement_source = "horizontal contour inside crop"
     else:
-        # The detector box remains the authoritative outline. If thresholding
-        # cannot isolate the bar, expose the box width instead of hiding px.
-        line_px = crop_width
-        line_x1, line_x2 = x1, x2
-        line_y1 = line_y2 = y1 + max(1, crop_height // 2)
-        measurement_source = "YOLO box width fallback"
+        # Fallback: use crop width
+        line_px = crop.shape[1]
+        line_x1, line_y1 = x1, (y1 + y2) // 2
+        line_x2, line_y2 = x2, line_y1
+        measurement_source = "crop width fallback"
 
+    # OCR for scale value
     ocr_text = ""
     scale_value_mm = None
     scale_unit = None
     pixel_size_mm = None
 
-    if use_ocr:
+    if use_ocr and best_cnt is not None:
         try:
             reader = load_ocr_reader()
-            # Upscaling improves recognition for small labels in microscopy
-            # images while keeping the OCR crop restricted to YOLO's box.
-            ocr_crop = cv2.resize(
-                crop, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC
-            )
-            ocr_text = " ".join(
-                str(text) for text in reader.readtext(ocr_crop, detail=0)
-            ).strip()
+            ocr_crop = cv2.resize(crop, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+            ocr_text = " ".join(str(text) for text in reader.readtext(ocr_crop, detail=0)).strip()
+
             normalized_text = (
                 ocr_text.lower()
                 .replace("μ", "µ")
@@ -615,8 +539,7 @@ def detect_scale_bar(
                 .replace("u m", "um")
             )
             match = re.search(
-                r"(?P<value>\d+(?:[.,]\d+)?)\s*"
-                r"(?P<unit>mm|µm|um|nm)\b",
+                r'(?P<value>\d+(?:[.,]\d+)?)\s*(?P<unit>mm|µm|um|nm)\b',
                 normalized_text,
                 flags=re.IGNORECASE,
             )
@@ -626,24 +549,19 @@ def detect_scale_bar(
                 conversion_to_mm = {"nm": 1e-6, "µm": 1e-3, "um": 1e-3, "mm": 1.0}
                 scale_value_mm = value * conversion_to_mm[unit]
                 scale_unit = unit
-                pixel_size_mm = scale_value_mm / line_px
+                pixel_size_mm = scale_value_mm / line_px if line_px > 0 else None
         except Exception as exc:
-            st.warning(f"OCR failed; px measurement is still available: {exc}")
+            st.warning(f"OCR failed: {exc}")
 
-    # Find Charpy boxes from filtered results
+    # Find Charpy boxes
     charpy_boxes = [
-        box
-        for box in filtered_boxes
-        if (
-            "charpy" in box["class_name"].lower()
-            or box["class_id"] == CLASS_CHARPY
-        )
+        box for box in all_boxes
+        if "charpy" in box["class_name"].lower() or box["class_id"] == CLASS_CHARPY
     ]
     charpy_width_px = 0
     if charpy_boxes:
-        charpy_width_px = max(
-            int(box["xyxy"][2] - box["xyxy"][0]) for box in charpy_boxes
-        )
+        charpy_width_px = max(int(box["xyxy"][2] - box["xyxy"][0]) for box in charpy_boxes)
+
     charpy_width_mm = (
         charpy_width_px * pixel_size_mm
         if charpy_width_px > 0 and pixel_size_mm is not None
@@ -662,12 +580,10 @@ def detect_scale_bar(
         "scale_unit": scale_unit,
         "pixel_size_mm": pixel_size_mm,
         "measurement_source": measurement_source,
-        "boxes": filtered_boxes,  # Only boxes that passed confidence thresholds
-        "all_boxes": all_boxes,   # All boxes for reference
+        "boxes": all_boxes,
         "class_names": class_names,
         "charpy_width_px": charpy_width_px,
         "charpy_width_mm": charpy_width_mm,
-        "is_fallback": is_fallback,
     }
 
 
@@ -698,7 +614,7 @@ def build_overlay(
     )
     blended_bgr = cv2.cvtColor(blended, cv2.COLOR_RGB2BGR)
 
-    # Draw YOLO boxes if they exist
+    # Draw YOLO boxes
     if scale and scale.get("boxes"):
         blended_bgr = draw_yolo_boxes(
             blended_bgr,
@@ -706,7 +622,7 @@ def build_overlay(
             scale.get("class_names", {}),
         )
 
-    # Draw scale measurement if found
+    # Draw scale measurement
     if scale and scale.get("found"):
         x1, y1, x2, y2 = scale["box"]
         lx1, ly, lx2, _ = scale["line"]
@@ -721,14 +637,7 @@ def build_overlay(
         label_x = max(4, min(lx1, blended_bgr.shape[1] - label_width - 8))
         label_y = max(label_height + baseline + 4, ly - 10)
 
-        # Draw the measured line and its px/mm value first.
-        cv2.line(
-            blended_bgr,
-            (lx1, ly),
-            (lx2, ly),
-            (0, 0, 255),
-            3,
-        )
+        cv2.line(blended_bgr, (lx1, ly), (lx2, ly), (0, 0, 255), 3)
         cv2.rectangle(
             blended_bgr,
             (label_x - 4, label_y - label_height - baseline - 4),
@@ -747,10 +656,9 @@ def build_overlay(
             cv2.LINE_AA,
         )
 
-    # Display Charpy width with standard mapping
+    # Display Charpy width
     if scale and scale.get("charpy_width_mm") is not None:
         display_text = f"Charpy width: {scale['charpy_width_mm']:.6g} mm"
-        # Calculate and display standard mapped value
         standard_width = map_charpy_width_to_standard(scale['charpy_width_mm'])
         if standard_width is not None:
             display_text += f" → {standard_width:.1f} mm (standard)"
@@ -770,9 +678,7 @@ def build_overlay(
 
 def png_bytes(image_rgb: np.ndarray) -> bytes:
     """Encode an RGB ndarray as a downloadable PNG."""
-    ok, encoded = cv2.imencode(
-        ".png", cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
-    )
+    ok, encoded = cv2.imencode(".png", cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR))
     if not ok:
         raise ValueError("Could not encode the result as PNG.")
     return encoded.tobytes()
@@ -780,11 +686,7 @@ def png_bytes(image_rgb: np.ndarray) -> bytes:
 
 def grayscale_mask_bytes(labels: np.ndarray, target_size: tuple[int, int]) -> bytes:
     width, height = target_size
-    full_mask = cv2.resize(
-        labels,
-        (width, height),
-        interpolation=cv2.INTER_NEAREST,
-    )
+    full_mask = cv2.resize(labels, (width, height), interpolation=cv2.INTER_NEAREST)
     ok, encoded = cv2.imencode(".png", full_mask)
     if not ok:
         raise ValueError("Could not encode the class mask as PNG.")
@@ -825,16 +727,11 @@ def main() -> None:
         initial_sidebar_state="expanded",
     )
     st.title("ДВС")
-    st.write(
-        "Определение ДВС по изображению."
-    )
+    st.write("Определение ДВС по изображению.")
 
     with st.sidebar:
         st.header("Models")
-        st.caption(
-            "Models are automatically loaded from GitHub. You can optionally upload custom models."
-        )
-
+        st.caption("Models are automatically loaded from GitHub. You can optionally upload custom models.")
         st.info(f"📦 Default models from: {GITHUB_REPO}")
 
         cnn_upload = st.file_uploader(
@@ -889,7 +786,7 @@ def main() -> None:
             "Mask opacity",
             min_value=0.1,
             max_value=0.8,
-            value=0.3,
+            value=0.1,
             step=0.05,
         )
 
@@ -920,23 +817,14 @@ def main() -> None:
             help="The first run may take longer while EasyOCR prepares its reader.",
         )
 
-        # Manual scale override
         st.header("Manual Scale (if OCR fails)")
         use_manual_scale = st.checkbox("Use manual scale instead of OCR", value=False)
         if use_manual_scale:
             col1, col2 = st.columns(2)
             with col1:
-                manual_px = st.number_input(
-                    "Scale bar pixels", min_value=1, value=1035, step=10
-                )
+                manual_px = st.number_input("Scale bar pixels", min_value=1, value=1035, step=10)
             with col2:
-                manual_mm = st.number_input(
-                    "Scale length (mm)",
-                    min_value=0.0,
-                    value=0.1,
-                    step=0.01,
-                    format="%.4f",
-                )
+                manual_mm = st.number_input("Scale length (mm)", min_value=0.0, value=0.1, step=0.01, format="%.4f")
 
     uploaded_image = st.file_uploader(
         "Загрузите изображение излома",
@@ -946,10 +834,7 @@ def main() -> None:
     show_legend()
 
     if uploaded_image is None:
-        st.info(
-            "Upload an image to begin. Models will be automatically downloaded from GitHub "
-            "when you run the analysis."
-        )
+        st.info("Upload an image to begin. Models will be automatically downloaded from GitHub when you run the analysis.")
         with st.expander("Expected model contract"):
             st.markdown(
                 "- **CNN:** Keras model with a grayscale `256 × 256 × 1` input "
@@ -1018,7 +903,6 @@ def main() -> None:
                             use_ocr and not use_manual_scale,
                         )
 
-                        # Override with manual scale if enabled
                         if use_manual_scale and scale_result and scale_result.get("found"):
                             scale_result["line_px"] = int(manual_px)
                             scale_result["pixel_size_mm"] = manual_mm / max(manual_px, 1)
@@ -1026,8 +910,7 @@ def main() -> None:
                             scale_result["scale_unit"] = "mm"
                             if scale_result.get("charpy_width_px", 0) > 0:
                                 scale_result["charpy_width_mm"] = (
-                                    scale_result["charpy_width_px"]
-                                    * scale_result["pixel_size_mm"]
+                                    scale_result["charpy_width_px"] * scale_result["pixel_size_mm"]
                                 )
                             scale_result["manual"] = True
 
@@ -1037,22 +920,12 @@ def main() -> None:
                     yolo_warning = "No YOLO model available."
 
                 colored_mask = render_mask(
-                    cv2.resize(
-                        labels_256,
-                        (image_rgb.shape[1], image_rgb.shape[0]),
-                        interpolation=cv2.INTER_NEAREST,
-                    ),
+                    cv2.resize(labels_256, (image_rgb.shape[1], image_rgb.shape[0]), interpolation=cv2.INTER_NEAREST),
                     (image_rgb.shape[1], image_rgb.shape[0]),
                 )
-                overlay = build_overlay(
-                    image_rgb, colored_mask, scale_result, overlay_opacity
-                )
+                overlay = build_overlay(image_rgb, colored_mask, scale_result, overlay_opacity)
                 pixel_counts = np.bincount(
-                    cv2.resize(
-                        labels_256,
-                        (image_rgb.shape[1], image_rgb.shape[0]),
-                        interpolation=cv2.INTER_NEAREST,
-                    ).ravel(),
+                    cv2.resize(labels_256, (image_rgb.shape[1], image_rgb.shape[0]), interpolation=cv2.INTER_NEAREST).ravel(),
                     minlength=3,
                 )
                 total_pixels = int(pixel_counts.sum())
@@ -1096,89 +969,69 @@ def main() -> None:
         st.warning(result["yolo_warning"])
     elif result.get("scale", {}).get("found"):
         scale = result["scale"]
-        scale_text = (
-            f"YOLO found the scale bar at {scale['confidence']:.0%} confidence"
-            f" · {scale['line_px']:,} px"
-        )
+        scale_text = f"YOLO found the scale bar at {scale['confidence']:.0%} confidence · {scale['line_px']:,} px"
         if scale.get("pixel_size_mm") is not None:
             if scale.get("manual"):
-                scale_text += (
-                    f" · {scale['scale_value_mm']:.6g} mm"
-                    f" · {scale['pixel_size_mm']:.6g} mm/px (manual)"
-                )
+                scale_text += f" · {scale['scale_value_mm']:.6g} mm · {scale['pixel_size_mm']:.6g} mm/px (manual)"
             else:
-                scale_text += (
-                    f" · {scale['scale_value_mm']:.6g} mm"
-                    f" · {scale['pixel_size_mm']:.6g} mm/px"
-                )
+                scale_text += f" · {scale['scale_value_mm']:.6g} mm · {scale['pixel_size_mm']:.6g} mm/px"
         elif scale.get("ocr_text"):
             scale_text += f" · OCR: “{scale['ocr_text']}”"
         else:
             scale_text += " · mm value not read"
-        st.success(scale_text)
+        # st.success(scale_text)
     else:
         st.info(result.get("scale", {}).get("message", "No scale bar detected."))
 
-    st.subheader("Segmentation result")
+    st.subheader("Сегментация излома")
     result_columns = st.columns(2)
     with result_columns[0]:
         st.image(result["overlay"], caption="Overlay with scale-bar annotation", use_container_width=True)
     with result_columns[1]:
         st.image(result["colored_mask"], caption="Class mask", use_container_width=True)
-
+    counts = result["pixel_counts"]
     scale = result.get("scale")
     if scale and scale.get("found"):
-        st.subheader("Detected scale bar")
-        scale_columns = st.columns(4)
+        scale_data = result.get("scale", {})
+        st.subheader("Результат")
+        scale_columns = st.columns(3)
         with scale_columns[0]:
-            st.metric("Bar length", f"{scale['line_px']:,} px")
+            if scale_data.get("pixel_size_mm") is not None:
+                pixel_size_mm = float(scale_data["pixel_size_mm"])
+                brittle_area_mm2 = int(counts[1]) * pixel_size_mm ** 2
+                st.metric("Площадь хрупкого излома", f"{brittle_area_mm2:.3g} мм²")
         with scale_columns[1]:
-            if scale.get("scale_value_mm") is not None:
-                st.metric("Bar value", f"{scale['scale_value_mm']:.6g} mm")
-            else:
-                st.metric("Bar value", "Not read")
+            if scale_data.get("charpy_width_mm") is not None:
+                charpy_width = scale_data["charpy_width_mm"]
+                standard_width = map_charpy_width_to_standard(charpy_width)
+                if standard_width is not None:
+                    st.metric("Номинальная ширина образца", f"{standard_width:.1f} мм")
+
         with scale_columns[2]:
-            if scale.get("pixel_size_mm") is not None:
-                st.metric("Scale", f"{scale['pixel_size_mm']:.6g} mm/px")
-            else:
-                st.metric("Scale", "Unavailable")
-        with scale_columns[3]:
-            st.metric("YOLO confidence", f"{scale['confidence']:.1%}")
-        if scale.get("ocr_text"):
-            st.caption(f"OCR text: {scale['ocr_text']}")
-
-    counts = result["pixel_counts"]
-    total = max(int(counts.sum()), 1)
-    metric_columns = st.columns(3)
-    for index, column in enumerate(metric_columns):
-        with column:
-            st.metric(
-                CLASS_NAMES[index],
-                f"{int(counts[index]):,} px",
-                f"{counts[index] / total * 100:.2f}% of image",
-            )
-
-    # Display area metrics with standard Charpy width
-    scale_data = result.get("scale", {})
-    if scale_data.get("pixel_size_mm") is not None:
-        pixel_size_mm = float(scale_data["pixel_size_mm"])
-        brittle_area_mm2 = int(counts[1]) * pixel_size_mm**2
-        st.metric("Площадь хрупкого излома", f"{brittle_area_mm2:.3g} мм²")
-
-        # Display Charpy width with standard mapping
-        if scale_data.get("charpy_width_mm") is not None:
-            charpy_width = scale_data["charpy_width_mm"]
-            standard_width = map_charpy_width_to_standard(charpy_width)
-            if standard_width is not None:
-                st.metric(
-                    "Номинальная ширина образца",
-                    f"{standard_width:.1f} мм"
-                )
-                SFA_eval = 100*(1-brittle_area_mm2/(standard_width*8))
-                st.metric(
-                    "ДВС",
-                    f"{SFA_eval:.0f} %"
-                )
+            if scale_data.get("charpy_width_mm") is not None:
+                charpy_width = scale_data["charpy_width_mm"]
+                standard_width = map_charpy_width_to_standard(charpy_width)
+                if standard_width is not None:
+                    SFA_eval = 100 * (1 - brittle_area_mm2 / (standard_width * 8))
+                    # st.metric("ДВС", f"{SFA_eval:.0f} %")
+                    st.markdown(
+                        f"""
+                                        <div style="
+                                            background: linear-gradient(135deg, #1e3a5f, #2a5298);
+                                            padding: 15px 20px;
+                                            border-radius: 10px;
+                                            text-align: center;
+                                            border: 3px solid #4CAF50;
+                                        ">
+                                            <span style="color: #aaa; font-size: 14px;">ДВС (Доля вязкой составляющей)</span>
+                                            <br>
+                                            <span style="color: #4CAF50; font-size: 42px; font-weight: bold;">
+                                                {SFA_eval:.0f}%
+                                            </span>
+                                        </div>
+                                        """,
+                        unsafe_allow_html=True
+                    )
 
     st.subheader("Download results")
     download_columns = st.columns(4)
@@ -1201,10 +1054,7 @@ def main() -> None:
     with download_columns[2]:
         st.download_button(
             "Download class mask",
-            grayscale_mask_bytes(
-                result["labels_256"],
-                (image_rgb.shape[1], image_rgb.shape[0]),
-            ),
+            grayscale_mask_bytes(result["labels_256"], (image_rgb.shape[1], image_rgb.shape[0])),
             file_name=f"{Path(uploaded_image.name).stem}_class_mask.png",
             mime="image/png",
             use_container_width=True,
