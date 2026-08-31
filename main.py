@@ -68,6 +68,52 @@ def map_charpy_width_to_standard(width_mm: float) -> float | None:
     return min(standard_sizes, key=lambda x: abs(x - width_mm))
 
 
+def measure_charpy_width(
+        gray_image: np.ndarray,
+        charpy_box: tuple[int, int, int, int],
+        pixel_size_mm: float | None
+) -> tuple[float | None, int | None]:
+    """
+    Measure Charpy width using contour detection inside the bounding box.
+    Returns: (charpy_width_mm, charpy_width_px)
+    """
+    x1, y1, x2, y2 = charpy_box
+
+    # Ensure coordinates are within image bounds
+    height, width = gray_image.shape[:2]
+    x1, x2 = max(0, x1), min(width, x2)
+    y1, y2 = max(0, y1), min(height, y2)
+
+    if x2 <= x1 or y2 <= y1:
+        return None, None
+
+    # Crop the Charpy region
+    crop = gray_image[y1:y2, x1:x2]
+
+    # Use binary thresholding to find the Charpy region
+    # Charpy notch appears as a dark region on light background
+    _, thresh = cv2.threshold(crop, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+
+    # Find contours
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    if not contours:
+        # Fallback: use bounding box width
+        charpy_width_px = x2 - x1
+        charpy_width_mm = charpy_width_px * pixel_size_mm if pixel_size_mm is not None else None
+        return charpy_width_mm, charpy_width_px
+
+    # Find the largest contour (the Charpy notch)
+    largest_contour = max(contours, key=cv2.contourArea)
+    cx, cy, cw, ch = cv2.boundingRect(largest_contour)
+
+    # The width of the Charpy region
+    charpy_width_px = cw
+
+    # Convert to mm if pixel size is available
+    charpy_width_mm = charpy_width_px * pixel_size_mm if pixel_size_mm is not None else None
+
+    return charpy_width_mm, charpy_width_px
 def validate_model_file(file_path: str, model_type: str) -> bool:
     """Validate that the model file exists and is readable."""
     path = Path(file_path)
@@ -404,15 +450,27 @@ def draw_yolo_boxes(
 
     # Draw only the BEST Charpy box (highest confidence)
     if charpy_boxes:
-        best_char_py = max(charpy_boxes, key=lambda b: b[5])  # Sort by confidence
+        best_char_py = max(charpy_boxes, key=lambda b: b[5])
         x1, y1, x2, y2, cls_name, confidence = best_char_py
         cv2.rectangle(out, (x1, y1), (x2, y2), COLOR_CHARPY, 2)
+
+        # Calculate Charpy width in pixels
+        charpy_width_px = x2 - x1
+
+        # Get pixel size from the scale result (if available)
+        # This is passed through a global or we need to modify the function signature
         label = f"{cls_name} {confidence:.2f}"
         (text_width, text_height), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
+
+        # Add width measurement to label
+        if charpy_width_px > 0:
+            # We'll add the mm value later when we have pixel_size
+            label = f"Charpy: {charpy_width_px}px"
+
         label_top = max(0, y1 - text_height - baseline - 6)
         cv2.rectangle(out, (x1, label_top), (x1 + text_width + 6, y1), COLOR_CHARPY, cv2.FILLED)
-        cv2.putText(out, label, (x1 + 3, max(text_height + 2, y1 - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 1,
-                    cv2.LINE_AA)
+        cv2.putText(out, label, (x1 + 3, max(text_height + 2, y1 - 4)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 1, cv2.LINE_AA)
 
     # Draw ALL scale bar boxes
     for x1, y1, x2, y2, cls_name, confidence in scale_boxes:
@@ -558,15 +616,27 @@ def detect_scale_bar(
         box for box in all_boxes
         if "charpy" in box["class_name"].lower() or box["class_id"] == CLASS_CHARPY
     ]
-    charpy_width_px = 0
-    if charpy_boxes:
-        charpy_width_px = max(int(box["xyxy"][2] - box["xyxy"][0]) for box in charpy_boxes)
 
-    charpy_width_mm = (
-        charpy_width_px * pixel_size_mm
-        if charpy_width_px > 0 and pixel_size_mm is not None
-        else None
-    )
+    # --- CHANGED: Use contour-based measurement like standalone script ---
+    charpy_width_px = 0
+    charpy_width_mm = None
+
+    if charpy_boxes:
+        # Get the highest confidence Charpy box
+        best_charpy = max(charpy_boxes, key=lambda b: b["confidence"])
+        charpy_box = best_charpy["xyxy"]
+
+        # Use contour-based measurement
+        charpy_width_mm, charpy_width_px = measure_charpy_width(
+            gray,
+            charpy_box,
+            pixel_size_mm
+        )
+
+        # If contour measurement failed, fallback to bounding box width
+        if charpy_width_px is None:
+            charpy_width_px = max(int(box["xyxy"][2] - box["xyxy"][0]) for box in charpy_boxes)
+            charpy_width_mm = charpy_width_px * pixel_size_mm if pixel_size_mm is not None else None
 
     return {
         "found": True,
@@ -584,6 +654,7 @@ def detect_scale_bar(
         "class_names": class_names,
         "charpy_width_px": charpy_width_px,
         "charpy_width_mm": charpy_width_mm,
+        "charpy_box": charpy_box if charpy_boxes else None,
     }
 
 
@@ -658,7 +729,7 @@ def build_overlay(
 
     # Display Charpy width
     if scale and scale.get("charpy_width_mm") is not None:
-        display_text = f"Charpy width: {scale['charpy_width_mm']:.6g} mm"
+        display_text = f"Charpy width: {scale['charpy_width_mm']:.2g} mm"
         standard_width = map_charpy_width_to_standard(scale['charpy_width_mm'])
         if standard_width is not None:
             display_text += f" → {standard_width:.1f} mm (standard)"
@@ -724,7 +795,7 @@ def main() -> None:
         page_title="ДВС",
         page_icon="FM",
         layout="wide",
-        initial_sidebar_state="collapsed",
+        initial_sidebar_state="expanded",
     )
     st.title("ДВС")
     st.write("Определение ДВС по изображению.")
