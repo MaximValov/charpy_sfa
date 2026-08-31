@@ -724,7 +724,7 @@ def main() -> None:
         page_title="ДВС",
         page_icon="FM",
         layout="wide",
-        initial_sidebar_state="expanded",
+        initial_sidebar_state="collapsed",
     )
     st.title("ДВС")
     st.write("Определение ДВС по изображению.")
