@@ -510,7 +510,7 @@ def main() -> None:
             [
                 cnn_path,
                 # "unet23jan_model.h5",
-                "models/unet23jan_model2.h5",
+                "models/unet23jan_model.h5",
                 # "models/unet_model.h5",
             ]
         )
